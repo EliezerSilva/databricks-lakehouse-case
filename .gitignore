@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# logs
+*.log
+
+# temp
+*.tmp
+
+# compressed
+*.zip
+
+# html exports
+*.html
+
+# excalidraw exports
+*_files/
