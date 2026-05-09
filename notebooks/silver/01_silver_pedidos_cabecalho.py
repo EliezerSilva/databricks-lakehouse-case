@@ -6,6 +6,7 @@
 
 import datetime
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 # COMMAND ----------
 
@@ -34,6 +35,11 @@ def parse_date_col(col_name):
         F.try_to_timestamp(F.col(col_name), F.lit("dd/MM/yyyy")).cast("date"),
     )
 
+
+w_order = Window.partitionBy("order_id").orderBy(
+    F.col("last_update").desc_nulls_last()
+)
+
 df_silver = (
     df
     .withColumn(
@@ -58,6 +64,9 @@ df_silver = (
     .withColumn("order_priority", F.get_json_object(F.col("payment_details"), "$.priority"))
     .drop("payment_details", "source_file", "processing_timestamp", "ingestion_date")
     .withColumn("processing_timestamp", F.current_timestamp())
+    .withColumn("rn", F.row_number().over(w_order))
+    .filter(F.col("rn") == 1)
+    .drop("rn")
 )
 
 # COMMAND ----------
