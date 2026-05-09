@@ -17,16 +17,12 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
-# DBTITLE 1,Storage paths
-SOURCE_ROOT  = "/FileStore/case/sources"
-BRONZE_PATH  = "/FileStore/case/delta/bronze"
-SILVER_PATH  = "/FileStore/case/delta/silver"
-GOLD_PATH    = "/FileStore/case/delta/gold"
-CONTROL_PATH = "/FileStore/case/delta/control"
+# DBTITLE 1,Storage path
+SOURCE_ROOT = "/Volumes/workspace/lakehouse_case/sources"
 
 # COMMAND ----------
 
-# DBTITLE 1,Create databases and storage locations
+# DBTITLE 1,Create schemas
 spark.sql("CREATE SCHEMA IF NOT EXISTS bronze")
 spark.sql("CREATE SCHEMA IF NOT EXISTS silver")
 spark.sql("CREATE SCHEMA IF NOT EXISTS gold")
@@ -34,14 +30,14 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS control")
 
 # COMMAND ----------
 
-# DBTITLE 1,Create ingestion and quality control tables
+# DBTITLE 1,Control and quality tables
 spark.sql("""
     CREATE TABLE IF NOT EXISTS control.ingestion_log (
         source_file                   STRING    COMMENT 'arquivo de origem',
         target_table                  STRING    COMMENT 'tabela bronze de destino',
         records_loaded                LONG      COMMENT '0 quando status=NOK',
         pipeline_execution_timestamp  TIMESTAMP COMMENT 'início do notebook',
-        source_file_last_modified     TIMESTAMP COMMENT 'mtime do arquivo no DBFS',
+        source_file_last_modified     TIMESTAMP COMMENT 'mtime do arquivo no volume',
         source_reference_date         DATE      COMMENT 'data derivada do nome do arquivo',
         bronze_load_timestamp         TIMESTAMP COMMENT 'conclusão da escrita',
         status                        STRING    COMMENT 'OK ou NOK',
@@ -85,7 +81,7 @@ spark.sql("""
     USING DELTA
 """)
 
-print("databases: bronze | silver | gold | control")
+print("schemas: bronze | silver | gold | control")
 
 # COMMAND ----------
 
@@ -114,7 +110,7 @@ _QUALITY_LOG_SCHEMA = StructType([
 
 # COMMAND ----------
 
-# DBTITLE 1,Audit and validation functions
+# DBTITLE 1,Helper functions
 def get_file_last_modified(filename):
     try:
         info = dbutils.fs.ls(f"{SOURCE_ROOT}/{filename}")
@@ -127,6 +123,40 @@ def derive_reference_date(filename):
     if m:
         return datetime.date(int(m.group(1)), 1, 1)
     return None
+
+def check_already_loaded(source_file, target_table):
+    """Returns True if a successful load already exists for this source/target pair."""
+    n = spark.sql(f"""
+        SELECT COUNT(1) AS n FROM control.ingestion_log
+        WHERE source_file  = '{source_file}'
+          AND target_table = '{target_table}'
+          AND status = 'OK'
+    """).first()["n"]
+    if n > 0:
+        print(f"[RERUN] {source_file} → {target_table}")
+    return n > 0
+
+def add_bronze_cols(df, source_name, pipeline_ts):
+    """Adds standard lineage columns to a Bronze DataFrame."""
+    return (
+        df
+        .withColumn("ingestion_date",       F.current_date())
+        .withColumn("source_file",          F.lit(source_name))
+        .withColumn("processing_timestamp", F.lit(pipeline_ts).cast("timestamp"))
+    )
+
+def write_bronze_table(df, table_name):
+    """Overwrites a Bronze Delta managed table. Returns row count."""
+    (
+        df.write
+        .format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(f"bronze.{table_name}")
+    )
+    n = df.count()
+    print(f"bronze.{table_name}: {n} rows")
+    return n
 
 def validate_csv_layout(filename, expected_delimiter, expected_col_count):
     """CSV layout check — delimiter and column count only. Pure function, no side effects."""
@@ -179,32 +209,21 @@ def log_ingestion(source_file, target_table, records_loaded,
         detected_schema,
         expected_schema,
     )]
-
     (
         spark.createDataFrame(row, _LOG_SCHEMA)
-        .write
-        .format("delta")
-        .mode("append")
-        .save(f"{CONTROL_PATH}/ingestion_log")
+        .write.format("delta").mode("append")
+        .saveAsTable("control.ingestion_log")
     )
 
 def log_quality(source_table, check_name, records_affected, message):
     """Append to silver.quality_log. Skips when records_affected == 0."""
     if records_affected == 0:
         return
-    row = [(
-        datetime.datetime.utcnow(),
-        source_table,
-        check_name,
-        int(records_affected),
-        message,
-    )]
+    row = [(datetime.datetime.utcnow(), source_table, check_name, int(records_affected), message)]
     (
         spark.createDataFrame(row, _QUALITY_LOG_SCHEMA)
-        .write
-        .format("delta")
-        .mode("append")
-        .save(f"{SILVER_PATH}/quality_log")
+        .write.format("delta").mode("append")
+        .saveAsTable("silver.quality_log")
     )
 
 def write_invalidos(df, source_table, motivo):
@@ -215,10 +234,8 @@ def write_invalidos(df, source_table, motivo):
           .withColumn("motivo",               F.lit(motivo))
           .withColumn("payload",              F.to_json(F.struct([F.col(c) for c in df.columns])))
           .select("processing_timestamp", "source_table", "motivo", "payload")
-          .write
-          .format("delta")
-          .mode("append")
-          .save(f"{SILVER_PATH}/tabelas_invalidas")
+          .write.format("delta").mode("append")
+          .saveAsTable("silver.tabelas_invalidas")
     )
 
 def write_orfaos(df, source_table, join_key_name, join_key_col):
@@ -230,13 +247,10 @@ def write_orfaos(df, source_table, join_key_name, join_key_col):
           .withColumn("join_key_value",       F.col(join_key_col).cast("string"))
           .withColumn("payload",              F.to_json(F.struct([F.col(c) for c in df.columns])))
           .select("processing_timestamp", "source_table", "join_key_name", "join_key_value", "payload")
-          .write
-          .format("delta")
-          .mode("append")
-          .save(f"{SILVER_PATH}/tabelas_orfas")
+          .write.format("delta").mode("append")
+          .saveAsTable("silver.tabelas_orfas")
     )
 
 # COMMAND ----------
 
-# DBTITLE 1,Notebook completion
-dbutils.notebook.exit("ok")
+print("shared setup loaded")
