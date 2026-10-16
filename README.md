@@ -169,4 +169,3 @@ Cada notebook é autocontido. O `%run ../00_setup` no topo injeta os helpers e p
 - Ingestão incremental com MERGE e controle de watermark
 - Orquestração via Databricks Workflows
 - Unity Catalog para governança e lineage
-# dbt-databricks-lakehouse-case
