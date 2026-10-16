@@ -16,3 +16,21 @@
 # excalidraw exports
 *_files/
 Case - Data Sources/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+profiles.yml
